@@ -51,7 +51,7 @@ class FK(nn.Module):
                                 device=p.device)
         c = flatten_grid_config(g)
         fk = self(c)
-        d = fk.norm(dim=1)
+        d = (fk-p).norm(dim=1)
         return c[d<err,:], fk[d<err,:]
     
     def forward(self, x):
@@ -67,11 +67,13 @@ class FK(nn.Module):
         # Calcualte the matrices for each configuration
         m = self.config_to_matrix(x[:,0:1], x[:,1:2], xi_list[:,0:1])
         
-        # Multiply matrices up the robot arm, one segment at a time
-        for i in range(xi_list.shape[1] - 2):
-            m = m @ self.config_to_matrix(x[:,2*(i+1):2*(i+1)+1],
-                                    x[:,2*(i+1)+1:2*(i+1)+2],
-                                    xi_list[:,i+1:i+2])
+        i = 1
+        while i < xi_list.shape[1] and xi_list[:,i].any():
+            m = m @ self.config_to_matrix(
+                x[:,2*i:2*i+1],
+                x[:,2*i+1:2*i+2],
+                xi_list[:,i:i+1])
+            i += 1
         # Return only the position at the end (rightmost column of matrix)
         return m.permute(0, 2, 1)[:,3,0:3]
     

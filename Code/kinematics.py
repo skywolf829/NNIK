@@ -49,13 +49,18 @@ def intermediate_config_to_coord(p, xi_list=None):
                             dtype=torch.float32)
     
     # Calcualte the matrices for each configuration
-    m=config_to_matrix(p[:,0:1], p[:,1:2], xi_list[:,0:1])
+    m=config_to_matrix(p[:,0:1], 
+                       p[:,1:2], 
+                       xi_list[:,0:1])
     
     # Multiply matrices up the robot arm, one segment at a time
-    for i in range(xi_list.shape[1] - 2):
-        m = m @ config_to_matrix(p[:,2*(i+1):2*(i+1)+1],
-                                 p[:,2*(i+1)+1:2*(i+1)+2],
-                                 xi_list[:,i+1:i+2])
+    i = 1
+    while i < xi_list.shape[1] and xi_list[:,i].any():
+        m = m @ config_to_matrix(
+            p[:,2*i:2*i+1],
+            p[:,2*i+1:2*i+2],
+            xi_list[:,i:i+1])
+        i += 1
         
     # Return only the position at the end (rightmost column of matrix)
     return m.permute(0, 2, 1)[:,3,0:3]

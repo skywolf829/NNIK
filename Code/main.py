@@ -4,6 +4,7 @@ import matplotlib.pyplot as plt
 import matplotlib.cm as cm 
 import time
 from kinematics_modules import *
+from mpl_toolkits import mplot3d
 
 def sample_grid_example(m, n, k, device="cpu"):
     '''
@@ -40,6 +41,48 @@ def sample_grid_example(m, n, k, device="cpu"):
     plt.title("Distance from arm base")
     plt.show()
 
+def visualize_configurations(c, target_point=None):
+    fig = plt.figure()
+    ax = plt.axes(projection='3d')
+    
+    n_lines_per_config = 20
+    all_points = None
+    ps = []
+    for i in range(n_lines_per_config):
+        p = (i / (n_lines_per_config-1))
+        
+        xi1 = min(1.0, p*3)
+        xi2 = min(1.0, max(0.0, (p-(1/3))*3))
+        xi3 = min(1.0, max(0.0, (p-(2/3))*3))
+        
+        xi = torch.tensor([xi1, xi2, xi3], 
+                        dtype=torch.float32,
+                        device=c.device).view(1, 3).repeat(c.shape[0], 1)
+        
+        points = intermediate_config_to_coord(c, xi)
+        
+        if(all_points is None):
+            all_points = points
+        else:
+            all_points = torch.cat([all_points, points], dim=0)
+        ps.extend([p]*points.shape[0])
+            
+    ax.scatter3D(all_points.cpu().numpy()[:,0], 
+                all_points.cpu().numpy()[:,1],
+                all_points.cpu().numpy()[:,2],
+                alpha=0.05,
+                c=ps,
+                cmap="viridis")
+    
+    
+    if(target_point is not None):
+        ax.scatter3D(target_point[0].cpu().numpy(),
+                     target_point[1].cpu().numpy(),
+                     target_point[2].cpu().numpy(),
+                     label="Target", color="red")
+    plt.legend()
+    plt.show()
+
 if __name__ == "__main__":
     np.random.seed(0)       
     torch.random.manual_seed(0)    
@@ -70,3 +113,5 @@ if __name__ == "__main__":
     gb = torch.cuda.max_memory_allocated() / (1024*1024*1024)
     print(f"Found {c.shape[0]} solutions within {err} meters in {elapsed_time: 0.04f} seconds.")
     print(f"Memory use (if cuda): {gb}")
+    
+    visualize_configurations(c, target_point=torch.tensor(target_point, device=device))
