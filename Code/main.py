@@ -56,7 +56,7 @@ if __name__ == "__main__":
     # by nearly 3 orders of magnitude
     # cpu takes 1 minute, cuda takes 2.8 seconds
     target_point = [0.1, 0.03, 0.06]
-    max_GB = 1
+    max_GB = 6
     
     t0 = time.time()
     err = 0.01
@@ -67,4 +67,6 @@ if __name__ == "__main__":
         max_GB=max_GB)
     torch.cuda.synchronize()
     elapsed_time = time.time() - t0
+    gb = torch.cuda.max_memory_allocated() / (1024*1024*1024)
     print(f"Found {c.shape[0]} solutions within {err} meters in {elapsed_time: 0.04f} seconds.")
+    print(f"Memory use (if cuda): {gb}")

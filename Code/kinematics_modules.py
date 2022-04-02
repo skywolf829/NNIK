@@ -42,13 +42,14 @@ class FK(nn.Module):
         '''
         Finds configurations on a grid near the target point p
         '''
-        res = ((max_GB*1024*1024*1024)/(4*6))**(1/(2*self.n_segments))
+        # need to work on the max GB limitation, rn you have to lowball
+        # i.e. put max 6GB if you want to actually use 8
+        res = ((max_GB*1024*1024*1024)/(4*(6+16+16+3)))**(1/(2*self.n_segments))
         res = int(res)
         g = grid_configurations(res, res, 
                                 segments=self.n_segments, 
                                 device=p.device)
         c = flatten_grid_config(g)
-        
         fk = self(c)
         d = fk.norm(dim=1)
         return c[d<err,:], fk[d<err,:]
@@ -71,7 +72,6 @@ class FK(nn.Module):
             m = m @ self.config_to_matrix(x[:,2*(i+1):2*(i+1)+1],
                                     x[:,2*(i+1)+1:2*(i+1)+2],
                                     xi_list[:,i+1:i+2])
-            
         # Return only the position at the end (rightmost column of matrix)
         return m.permute(0, 2, 1)[:,3,0:3]
     
