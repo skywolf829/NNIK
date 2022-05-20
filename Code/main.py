@@ -19,6 +19,7 @@ def sample_grid_example(m, n, k, device="cpu"):
     #c = random_configuration(num=1000000, segments=3, device=device)
     c = grid_configurations(phi_res = m, theta_res = n,
                             segments=k, device=device)
+    
     t_elapsed = time.time() - t0
     print(f"Computation time for {(m*n)**k} points: {t_elapsed : 0.05f}s")
     c = flatten_grid_config(c)
@@ -45,7 +46,7 @@ def visualize_configurations(c, target_point=None):
     fig = plt.figure()
     ax = plt.axes(projection='3d')
     
-    n_lines_per_config = 20
+    n_lines_per_config = 5*3
     all_points = None
     ps = []
     for i in range(n_lines_per_config):
@@ -65,14 +66,19 @@ def visualize_configurations(c, target_point=None):
             all_points = points
         else:
             all_points = torch.cat([all_points, points], dim=0)
-        ps.extend([p]*points.shape[0])
-            
+        
+        if(xi2 < 0.0):
+            ps.append("red")
+        elif(xi3 < 0.0):
+            ps.append("green")
+        else:
+            ps.append("blue")
+    print(all_points.shape)
     ax.scatter3D(all_points.cpu().numpy()[:,0], 
                 all_points.cpu().numpy()[:,1],
                 all_points.cpu().numpy()[:,2],
-                alpha=0.05,
-                c=ps,
-                cmap="viridis")
+                alpha=1.0,
+                c=ps)
     
     
     if(target_point is not None):
@@ -114,4 +120,6 @@ if __name__ == "__main__":
     print(f"Found {c.shape[0]} solutions within {err} meters in {elapsed_time: 0.04f} seconds.")
     print(f"Memory use (if cuda): {gb}")
     
-    visualize_configurations(c, target_point=torch.tensor(target_point, device=device))
+    visualize_configurations(c[0::100], 
+                             target_point=torch.tensor(target_point, 
+                                                       device=device))

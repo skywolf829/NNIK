@@ -50,13 +50,14 @@ class FK(nn.Module):
                                 segments=self.n_segments, 
                                 device=p.device)
         c = flatten_grid_config(g)
+        print(f"Sampling {c.shape[0]} configuration forward kinematics")
         fk = self(c)
         d = (fk-p).norm(dim=1)
         return c[d<err,:], fk[d<err,:]
     
     def forward(self, x):
         '''
-        Does forward kinematics for 
+        Does forward kinematics for x
         '''
         # Assume we mean tip position if xi_list is None
         xi_list = torch.ones([x.shape[0], 
