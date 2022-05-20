@@ -68,6 +68,7 @@ def intermediate_config_to_coord(p, xi_list=None):
 def random_configuration(num=1, segments=3, device="cpu"):
     '''
     Creates num random configurations of size [num, 2*segments]
+    in phi, theta order
     '''
     configs = torch.rand(size=[num, 2*segments], 
                          device=device,
