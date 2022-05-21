@@ -1,17 +1,18 @@
+from random import random
 import numpy as np
 import time
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
 from sparsemax import Sparsemax
-from kinematics import random_configuration
+from kinematics import random_configuration, switch_config_order
 from torch.utils.tensorboard import SummaryWriter
 import os
 from kinematics_modules import FK
 
 class primary_network(nn.Module):
     '''
-    This is the co-called "primary network", which is responsible for
+    This is the so-called "primary network", which is responsible for
     the GMM for the likelyhood of angles for a single arm given
     input previous arm angles. This model is not directly learning
     anything. Instead, the weights supplied to it come from the
@@ -30,87 +31,139 @@ class primary_network(nn.Module):
     first layer are still relevant.
     '''
     def __init__(self, n_inputs, 
+                 actuator_range,
                  n_GMM=50, 
-                 nodes_per_layer=256,
-                 config_per_segment=2):
+                 nodes_per_layer=256):
         super().__init__()
         
         self.n_GMM = n_GMM
+        self.actuator_range = actuator_range
         self.n_inputs = n_inputs
         self.nodes_per_layer = nodes_per_layer
-        self.config_per_segment = config_per_segment
         
         # Used in forward pass for the mixing coefficients of the
         # gaussians in the GMM. More details in forward()
-        self.sparsemax = Sparsemax(dim=-1)
+        self.sparsemax = Sparsemax(dim=-1)        
         
+        self.init_weights_biases()
+        
+    def init_weights_biases(self, batch_size=1):
+                
         # For the first arm, there must be 1 "dummy" input node
         # and the input is always 0 so the weights are ignored.
-        # instead, the bias terms are learned
-        self.net = nn.Sequential(
-            nn.Linear(max(1,self.n_inputs), self.nodes_per_layer),
-            nn.ReLU(),
-            nn.Linear(self.nodes_per_layer, self.nodes_per_layer),
-            nn.ReLU(),
-            nn.Linear(self.nodes_per_layer, self.nodes_per_layer),
-            nn.ReLU(),
-            nn.Linear(self.nodes_per_layer, 3*self.n_GMM)
-        )
-    
+        self.weights1 = torch.empty([batch_size, self.nodes_per_layer, max(1, self.n_inputs)],
+                                    dtype=torch.float32)
+        self.bias1 = torch.empty([batch_size, self.nodes_per_layer, 1],
+                                 dtype=torch.float32)
+        
+        self.weights2 = torch.empty([batch_size, self.nodes_per_layer, self.nodes_per_layer],
+                                    dtype=torch.float32)
+        self.bias2 = torch.empty([batch_size, self.nodes_per_layer, 1],
+                                 dtype=torch.float32)
+        
+        self.weights3 = torch.empty([batch_size, self.nodes_per_layer, self.nodes_per_layer],
+                                    dtype=torch.float32)
+        self.bias3 = torch.empty([batch_size, self.nodes_per_layer, 1],
+                                 dtype=torch.float32)
+        
+        self.weights4 = torch.empty([batch_size, 3*self.n_GMM, self.nodes_per_layer],
+                                    dtype=torch.float32)
+        
     def set_weights(self, weight_array):
         '''
         A utility function for the hypernetwork to easily
         update the weights of this network given the weight_array.
         '''
         spot = 0
-        for i in range(len(self.net)):
-            arm_no = int(i/self.config_per_segment)
-            if(hasattr(self.net[i], 'weight') and arm_no > 0):                
-                print(f"{i}: {self.net[i].weight.shape}")
-                
-                weight_size = self.net[i].weight.shape[0]
-                for j in range(1, len(self.net[i].weight.shape)):
-                    weight_size *= self.net[i].weight.shape[j]
-                    
-                self.net[i].weight = torch.nn.Parameter(
-                    data=weight_array[
-                        spot:spot+weight_size
-                    ].reshape(self.net[0].weight.shape)
-                )
-                spot += weight_size
-                
-            if(hasattr(self.net[i], 'bias')):
-                print(f"{i}: {self.net[i].bias.shape}")
-                
-                bias_size = self.net[i].bias.shape[0]
-                for j in range(1, len(self.net[i].bias.shape)):
-                    bias_size *= self.net[i].bias.shape[j]
-                    
-                self.net[i].bias = torch.nn.Parameter(
-                    data=weight_array[:,
-                        spot:spot+bias_size
-                    ].reshape(self.net[0].bias.shape)
-                )
-                spot += bias_size
     
-    def forward(self, input):
+        # Update the batch size if necessary
+        b = weight_array.shape[0]
+        if(self.weights1.shape[0] != b):
+            self.init_weights_biases(b)
+                
+        # weights1
+        weight_size = self.weights1.shape[1]*self.weights1.shape[2]
+        self.weights1 = weight_array[
+                    :,spot:spot+weight_size
+                ].reshape(self.weights1.shape)
+        spot += weight_size
+        # bias1
+        weight_size = self.bias1.shape[1]*self.bias1.shape[2]
+        self.bias1 = weight_array[
+                    :,spot:spot+weight_size
+                ].reshape(self.bias1.shape)
+        spot += weight_size
+        
+        # weights2
+        weight_size = self.weights2.shape[1]*self.weights2.shape[2]
+        self.weights2 = weight_array[
+                    :,spot:spot+weight_size
+                ].reshape(self.weights2.shape)
+        spot += weight_size
+        
+        # bias2
+        weight_size = self.bias2.shape[1]*self.bias2.shape[2]
+        self.bias2 = weight_array[
+                    :,spot:spot+weight_size
+                ].reshape(self.bias2.shape)
+        spot += weight_size
+        
+        # weights3
+        weight_size = self.weights3.shape[1]*self.weights3.shape[2]
+        self.weights3 = weight_array[
+                    :,spot:spot+weight_size
+                ].reshape(self.weights3.shape)
+        spot += weight_size
+        
+        # bias3
+        weight_size = self.bias3.shape[1]*self.bias3.shape[2]
+        self.bias3 = weight_array[
+                    :,spot:spot+weight_size
+                ].reshape(self.bias3.shape)
+        spot += weight_size
+        
+        # weights4
+        weight_size = self.weights4.shape[1]*self.weights4.shape[2]
+        self.weights4 = weight_array[
+                    :,spot:spot+weight_size
+                ].reshape(self.weights4.shape)
+        spot += weight_size
+             
+    def forward(self, x):
         '''
-        Built in torch function for computing the
-        forward pass through the network.
+        Computs the output GMM for the input x.
+        Expects x to be [batch, n_inputs]
         '''
-        gmm = self.net(input)
+        
+        x = torch.bmm(self.weights1, x.unsqueeze(-1))
+        x += self.bias1
+        x = F.relu(x)
+               
+        x = torch.bmm(self.weights2, x)
+        x += self.bias2
+        x = F.relu(x)
+        
+        x = torch.bmm(self.weights3, x)
+        x += self.bias3
+        x = F.relu(x)
+        
+        x = torch.bmm(self.weights4, x)[...,0]
+        
+        # Restrict the means to the range for 
+        # the actuator this represents
+        x[:,0::3] = (torch.tanh(x[:,0::3])+1.0)/2.0 * self.actuator_range
         
         # Variance cannot be negative, so use torch.abs to fix 
         # any negative variance scores
-        gmm[:,1::3] = torch.abs(gmm[:,1::3])
+        x[:,1::3] = torch.abs(x[:,1::3].clone())
         
         # Apply sparsemax to the mixing coefficients.
         # Install with 'pip install sparsemax'
         # It is a more selective attention based softmax, so 
         # results sum to 1, but the focus is only on a few of the gaussians.
-        gmm[:,2::3] = self.sparsemax(gmm[:,2::3])
+        x[:,2::3] = self.sparsemax(x[:,2::3])
         
-        return gmm
+        return x
 
 class probabalistic_NIK(nn.Module):  
     '''
@@ -135,26 +188,24 @@ class probabalistic_NIK(nn.Module):
         self.nodes_per_layer = nodes_per_layer
         self.primary_network_nodes_per_layer = primary_network_nodes_per_layer
         
-        
-     
         # The main component that maps a desired tip position
         # to the deep latent vector that is used as input to
         # the projection layers to create the weights for the 
         # primary networks.
         print("Creating main component")
         self.main_component = nn.Sequential(
-            nn.Linear(3, self.nodes_per_layer),
+            nn.Linear(3, self.nodes_per_layer, dtype=torch.float32),
             nn.ReLU(),
-            nn.BatchNorm1d(self.nodes_per_layer),
-            nn.Linear(self.nodes_per_layer, self.nodes_per_layer),
+            nn.BatchNorm1d(self.nodes_per_layer, dtype=torch.float32),
+            nn.Linear(self.nodes_per_layer, self.nodes_per_layer, dtype=torch.float32),
             nn.ReLU(),
-            nn.BatchNorm1d(self.nodes_per_layer),
-            nn.Linear(self.nodes_per_layer, self.nodes_per_layer),
+            nn.BatchNorm1d(self.nodes_per_layer, dtype=torch.float32),
+            nn.Linear(self.nodes_per_layer, self.nodes_per_layer, dtype=torch.float32),
             nn.ReLU(),
-            nn.BatchNorm1d(self.nodes_per_layer),
-            nn.Linear(self.nodes_per_layer, self.nodes_per_layer),
+            nn.BatchNorm1d(self.nodes_per_layer, dtype=torch.float32),
+            nn.Linear(self.nodes_per_layer, self.nodes_per_layer, dtype=torch.float32),
             nn.ReLU(),
-            nn.BatchNorm1d(self.nodes_per_layer)
+            nn.BatchNorm1d(self.nodes_per_layer, dtype=torch.float32)
         )
         print(self.main_component)
         
@@ -166,27 +217,27 @@ class probabalistic_NIK(nn.Module):
         # for each configuration output per arm.
         # For a rigid arm, there is one configuration item per arm
         # which is just the rotation. For a soft robotic arm,
-        # we have two each.
+        # we have two each. It is assumed the output is in
+        # theta, phi order, since phi will have more reliance
+        # on theta per segment.
         print("Creating each projection layer and primary network")
         for i in range(self.n_segments*self.config_per_segment):
-            print(f"Projection layer and primary network {i}")
-            arm_no = int(i/self.config_per_segment)
             self.projection_layers.append(
                 nn.Linear(self.nodes_per_layer, # the output from the main component 
-                          arm_no*self.config_per_segment*self.primary_network_nodes_per_layer + \
+                          max(1,i)*self.primary_network_nodes_per_layer + \
                               self.primary_network_nodes_per_layer + # input to first layer
                           self.primary_network_nodes_per_layer*self.primary_network_nodes_per_layer + \
                               self.primary_network_nodes_per_layer + #first to second layer
                           self.primary_network_nodes_per_layer*self.primary_network_nodes_per_layer + \
                               self.primary_network_nodes_per_layer + #second to third layer
-                          self.primary_network_nodes_per_layer*(3*self.n_GMM)+(3*self.n_GMM) #third to output
-                          )
+                          self.primary_network_nodes_per_layer*(3*self.n_GMM) #third to output
+                          , dtype=torch.float32)
             )
             self.primary_networks.append(
-                primary_network(arm_no*self.config_per_segment, self.n_GMM)
+                primary_network(i, 
+                                2*torch.pi if i%2 == 0 else torch.pi,
+                                n_GMM = self.n_GMM)
             )
-            print(self.projection_layers[-1])
-            print(self.primary_networks[-1])
 
     def parameters(self):
         return self.main_component.parameters()
@@ -243,7 +294,6 @@ class probabalistic_NIK(nn.Module):
         # Sample configurations from the bottom upward
         for i in range(len(self.projection_layers)):
             
-            arm_no = int(i/self.config_per_segment)
             # Get the weights for the primary network and update them
             weights = self.projection_layers[i](pre_projection)
             self.primary_networks[i].set_weights(weights)
@@ -252,11 +302,12 @@ class probabalistic_NIK(nn.Module):
             # be the configuration of the previous joints
             # A special case is the first arm, which takes no inputs,
             # so we set the dummy input to 0
-            primary_network_input = torch.zeros([x.shape[0], max(arm_no*self.config_per_segment, 1)])
+            
+            primary_network_input = torch.zeros([x.shape[0],1], device=weights.device)
             if(i > 0 and config is None):
-                primary_network_input[:] = torch.tensor(configuration)
+                primary_network_input[:] = torch.tensor(configuration, device=weights.device)
             elif(i > 0):
-                primary_network_input[:] = torch.tensor(config[0:arm_no*self.config_per_segment])
+                primary_network_input = config[:,0:i].clone().to(weights.device)
                 
             # Get the GMM output for the network
             # gmm_i[:,0::3] is the mean, 
@@ -272,33 +323,38 @@ class probabalistic_NIK(nn.Module):
                 # segment 
                 sample = config[:,i:i+1]
                 
+                '''
                 # calculate the log likelyhood of this sample given
                 # the gmm_i the networks have created
                 gmms = torch.distributions.normal.Normal(
                     gmm_i[:,0::3], 
                     gmm_i[:,1::3]**0.5)
                 ll_i = gmms.log_prob(sample).sum(dim=1)         
-                        
+                
                 # add that to the total log likelyhood
                 log_likelyhood += ll_i
+                '''
                 
+                ll_i = (-1/2) * (torch.log(2*torch.pi*gmm_i[:,1::3]) + (1/gmm_i[:,1::3])*((sample-gmm_i[:,0::3])**2))
+                log_likelyhood += ll_i.sum(dim=1)
+        
+        
         if(config is None):
             return sampled_gmm
         else:
             return log_likelyhood
     
-def train(model, iterations=10000, batch_size=1000, lr=0.0005, device="cuda:0"):
+def train(model, iterations=10000, batch_size=100, lr=0.05, device="cuda:0"):
     '''
     Trains the given model using random sampling of the 
     configuration space.
     '''
     model = model.to(device)
-    optim = torch.optim.Adam(model.parameters(), lr=lr, 
-        betas=(0.9,0.99))
+    optim = torch.optim.Adam(model.parameters(), lr=lr)
     writer = SummaryWriter(os.path.join('tensorboard'))
     
     fk = FK(3)
-    
+
     print("Beginning training")
     for iter in range(iterations):
         model.zero_grad()
@@ -306,17 +362,19 @@ def train(model, iterations=10000, batch_size=1000, lr=0.0005, device="cuda:0"):
         # Sample random configurations
         random_configs = random_configuration(batch_size, 3, device)
         # Find the fk result for these configurations
-        fk_out = fk(random_configs)
+        fk_out = fk(random_configs)        
+        #Fix the ordering to theta-phi for training        
+        random_configs = switch_config_order(random_configs)
         
         # Get the log-likelyhood of the configurations given the tip position
         # of the current model, which we want to minimize
-        ll = model(fk_out, config=random_configs).sum()
+        ll = -model(fk_out, config=random_configs).sum()
         
         print(f"Iteration {iter+1}/{iterations} - ll:{ll.item() : 0.04f}")
         writer.add_scalar('log_likelyhood', ll.item(), iter)
 
         # Update the model
-        model.backward(ll)
+        ll.backward()
         optim.step()
     
     return model

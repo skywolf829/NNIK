@@ -68,15 +68,26 @@ def intermediate_config_to_coord(p, xi_list=None):
 def random_configuration(num=1, segments=3, device="cpu"):
     '''
     Creates num random configurations of size [num, 2*segments]
-    in phi, theta order
+    in phi-theta order
     '''
     configs = torch.rand(size=[num, 2*segments], 
                          device=device,
                          dtype=torch.float32)
-    configs[::2] *= math.pi
-    configs[1::2] *= math.pi * 2
+    configs[:,::2] *= math.pi 
+    configs[:,1::2] *= math.pi * 2
     return configs
 
+def switch_config_order(configs):
+    '''
+    Assumes a config tensor of shape [b, 2*segments] and
+    switches the config order from phi-theta to theta-phi,
+    or vice versa
+    '''
+    new_configs = torch.empty_like(configs)
+    new_configs[:,::2] = configs[:,1::2]
+    new_configs[:,1::2] = configs[:,::2]
+    return new_configs
+    
 def grid_configurations(phi_res = 128, theta_res = 128, segments=3, device="cpu"):
     '''
     Creates configurations in a uniform grid over phi and theta
