@@ -179,7 +179,8 @@ class probabalistic_NIK(nn.Module):
                  config_per_segment=2, 
                  n_GMM=50, 
                  nodes_per_layer = 1024,
-                 primary_network_nodes_per_layer=256):
+                 primary_network_nodes_per_layer=256,
+                 device="cuda"):
         super().__init__()        
         
         self.n_segments = n_segments
@@ -187,7 +188,8 @@ class probabalistic_NIK(nn.Module):
         self.n_GMM = n_GMM
         self.nodes_per_layer = nodes_per_layer
         self.primary_network_nodes_per_layer = primary_network_nodes_per_layer
-        
+        self.device = device
+
         # The main component that maps a desired tip position
         # to the deep latent vector that is used as input to
         # the projection layers to create the weights for the 
@@ -382,8 +384,8 @@ def train(model, iterations=10000, batch_size=100, lr=0.05, device="cuda:0"):
 if __name__ == "__main__":
     np.random.seed(0)       
     torch.random.manual_seed(0)    
-    device = "cuda"
+    device = "cpu"
     
-    model = probabalistic_NIK()
-    model = train(model)
+    model = probabalistic_NIK(device=device)
+    model = train(model, device=device)
     
