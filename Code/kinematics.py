@@ -77,6 +77,18 @@ def random_configuration(num=1, segments=3, device="cpu"):
     configs[:,1::2] *= math.pi * 2
     return configs
 
+def test_configuration(num=1, segments=3, device="cpu"):
+    '''
+    Creates num specific configurations of size [num, 2*segments]
+    in phi-theta order
+    '''
+    configs = torch.ones(size=[num, 2*segments], 
+                         device=device,
+                         dtype=torch.float32) * 0.5
+    configs[:,::2] *= math.pi 
+    configs[:,1::2] *= math.pi * 2
+    return configs
+
 def switch_config_order(configs):
     '''
     Assumes a config tensor of shape [b, 2*segments] and

@@ -5,7 +5,7 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 from sparsemax import Sparsemax
-from kinematics import random_configuration, switch_config_order
+from kinematics import random_configuration, switch_config_order, test_configuration
 from torch.utils.tensorboard import SummaryWriter
 import os
 from kinematics_modules import FK
@@ -151,11 +151,12 @@ class primary_network(nn.Module):
         
         # Restrict the means to the range for 
         # the actuator this represents
-        x[:,0::3] = (torch.tanh(x[:,0::3])+1.0)/2.0 * self.actuator_range
+        x[:,0::3] = torch.tanh(x[:,0::3]) * self.actuator_range
         
         # Variance cannot be negative, so use torch.abs to fix 
         # any negative variance scores
         x[:,1::3] = torch.abs(x[:,1::3].clone())
+        #x[:,1::3] = x[:,1::3].clone()**2
         
         # Apply sparsemax to the mixing coefficients.
         # Install with 'pip install sparsemax'
@@ -175,7 +176,8 @@ class probabalistic_NIK(nn.Module):
     different sizes (just the first one), the projection
     layers may have different sizes too. 
     '''
-    def __init__(self, n_segments=3, 
+    def __init__(self, 
+                 n_segments=3, 
                  config_per_segment=2, 
                  n_GMM=50, 
                  nodes_per_layer = 1024,
@@ -207,11 +209,10 @@ class probabalistic_NIK(nn.Module):
             nn.ReLU(),
             nn.BatchNorm1d(self.nodes_per_layer, dtype=torch.float32)
         )
-        print(self.main_component)
         
         # Separate projection layers for the primary networks
         self.projection_layers = nn.ModuleList()
-        self.primary_networks = nn.ModuleList()
+        self.primary_networks = []
         
         # Create one projection layer and one primary network
         # for each configuration output per arm.
@@ -231,16 +232,21 @@ class probabalistic_NIK(nn.Module):
                           self.primary_network_nodes_per_layer*self.primary_network_nodes_per_layer + \
                               self.primary_network_nodes_per_layer + #second to third layer
                           self.primary_network_nodes_per_layer*(3*self.n_GMM) #third to output
-                          , dtype=torch.float32)
+                          , dtype=torch.float32, bias=True)
             )
             self.primary_networks.append(
                 primary_network(i, 
                                 2*torch.pi if i%2 == 0 else torch.pi,
-                                n_GMM = self.n_GMM)
+                                n_GMM = self.n_GMM,
+                                nodes_per_layer=self.primary_network_nodes_per_layer)
             )
 
-    def parameters(self):
-        return self.main_component.parameters()
+        # Weight initialization
+        def init_weights(m):
+            if isinstance(m, nn.Linear):
+                torch.nn.init.xavier_uniform_(m.weight)
+                m.bias.data.fill_(0.01)
+        self.apply(init_weights)
 
     def sample_gmm(self, gmm):
         # Given that gmm[:,2::3] represent the mixture weights,
@@ -289,7 +295,7 @@ class probabalistic_NIK(nn.Module):
         if(config is None):
             configuration = []
         else:
-            log_likelyhood = 0
+            log_likelihoods = None
             
         # Sample configurations from the bottom upward
         for i in range(len(self.projection_layers)):
@@ -305,7 +311,8 @@ class probabalistic_NIK(nn.Module):
             
             primary_network_input = torch.zeros([x.shape[0],1], device=weights.device)
             if(i > 0 and config is None):
-                primary_network_input[:] = torch.tensor(configuration, device=weights.device)
+                primary_network_input[:] = torch.tensor(configuration, 
+                                                        device=weights.device)
             elif(i > 0):
                 primary_network_input = config[:,0:i].clone().to(weights.device)
                 
@@ -313,46 +320,48 @@ class probabalistic_NIK(nn.Module):
             # gmm_i[:,0::3] is the mean, 
             # gmm_i[:,1::3] is the variance, and
             # gmm_i[:,2::3] is the mixing coefficient
-            gmm_i = self.primary_networks[i](primary_network_input)
+            gmm_i = self.primary_networks[i](primary_network_input.detach())
             
             if(config is None):
                 # Sample from the final GMM
                 sampled_gmm = self.sample_gmm(gmm_i)
             else:
-                # The teacher forcing sample config for this 
-                # segment 
-                sample = config[:,i:i+1]
+                # The teacher forcing sample config for this segment 
+                sample = config[:,i:i+1].detach()
                 
-                '''
-                # calculate the log likelyhood of this sample given
-                # the gmm_i the networks have created
-                gmms = torch.distributions.normal.Normal(
-                    gmm_i[:,0::3], 
-                    gmm_i[:,1::3]**0.5)
-                ll_i = gmms.log_prob(sample).sum(dim=1)         
-                
-                # add that to the total log likelyhood
-                log_likelyhood += ll_i
-                '''
-                
-                ll_i = (-1/2) * (torch.log(2*torch.pi*gmm_i[:,1::3]) + (1/gmm_i[:,1::3])*((sample-gmm_i[:,0::3])**2))
-                log_likelyhood += ll_i.sum(dim=1)
-        
+                # calculate the log likelihood of this sample given
+                # the gmm_i the networks have created                
+                # This is the likelihood for the GMM to sample the teacher forced
+                # sample above
+                likelihoods_i = gmm_i[:,2::3] * (1/(2*torch.pi*gmm_i[:,1::3])**0.5) * \
+                    torch.exp(-((gmm_i[:,0::3]-sample)**2)/(2*gmm_i[:,1::3]))
+                # Sum each gaussian's probability into a single probability.
+                # Should be of shape [batch, n_GMM]
+                likelihoods_i = likelihoods_i.sum(dim=-1)
+                if(log_likelihoods is None):
+                    # If this is the first segment, set the likelihoods to the 
+                    # log probabilities
+                    log_likelihoods = torch.log(likelihoods_i + 1e-10)
+                else:
+                    # Otherwise, we multiply the probabilities going up 
+                    # equivalent to adding logs
+                    log_likelihoods += torch.log(likelihoods_i + 1e-10)
         
         if(config is None):
             return sampled_gmm
         else:
-            return log_likelyhood
+            return log_likelihoods
     
-def train(model, iterations=10000, batch_size=100, lr=0.05, device="cuda:0"):
+def train(model, iterations=10000, batch_size=50, lr=0.001, device="cuda:0"):
     '''
     Trains the given model using random sampling of the 
     configuration space.
     '''
     model = model.to(device)
+    model.train(True)
     optim = torch.optim.Adam(model.parameters(), lr=lr)
     writer = SummaryWriter(os.path.join('tensorboard'))
-    
+        
     fk = FK(3)
 
     print("Beginning training")
@@ -360,7 +369,7 @@ def train(model, iterations=10000, batch_size=100, lr=0.05, device="cuda:0"):
         model.zero_grad()
         
         # Sample random configurations
-        random_configs = random_configuration(batch_size, 3, device)
+        random_configs = test_configuration(batch_size, 3, device)
         # Find the fk result for these configurations
         fk_out = fk(random_configs)        
         #Fix the ordering to theta-phi for training        
@@ -368,13 +377,14 @@ def train(model, iterations=10000, batch_size=100, lr=0.05, device="cuda:0"):
         
         # Get the log-likelyhood of the configurations given the tip position
         # of the current model, which we want to minimize
-        ll = -model(fk_out, config=random_configs).sum()
+        # Add 1 to stabilize underflow and such
+        nll = -model(fk_out, config=random_configs).mean()
         
-        print(f"Iteration {iter+1}/{iterations} - ll:{ll.item() : 0.04f}")
-        writer.add_scalar('log_likelyhood', ll.item(), iter)
+        print(f"Iteration {iter+1}/{iterations} - ll:{nll.item() : 0.06f}")
+        writer.add_scalar('log_likelyhood', nll.item(), iter)
 
         # Update the model
-        ll.backward()
+        nll.backward()
         optim.step()
     
     return model
@@ -384,6 +394,10 @@ if __name__ == "__main__":
     torch.random.manual_seed(0)    
     device = "cuda"
     
-    model = probabalistic_NIK()
+    model = probabalistic_NIK(n_segments=3, 
+                 config_per_segment=2, 
+                 n_GMM=50, 
+                 nodes_per_layer=512,
+                 primary_network_nodes_per_layer=128)
     model = train(model)
     
