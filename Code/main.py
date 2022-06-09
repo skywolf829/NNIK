@@ -5,7 +5,7 @@ import matplotlib.cm as cm
 import time
 from kinematics_modules import *
 from mpl_toolkits import mplot3d
-
+#sample push from brandon, with love <3
 def sample_grid_example(m, n, k, device="cpu"):
     '''
     An example of sampling a grid with phi resolution 
